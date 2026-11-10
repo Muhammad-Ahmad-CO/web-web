@@ -44,7 +44,7 @@
 
   /* ---------- hero ---------- */
   .hero{position:relative;min-height:100svh;overflow:hidden;display:flex;flex-direction:column}
-  #stage{position:absolute;inset:0;z-index:20;pointer-events:none}
+  #stage{position:fixed;inset:0;z-index:60;pointer-events:none}
   .sleep-note{
     position:relative;z-index:5;text-align:center;margin-top:74px;
     font-size:12.5px;letter-spacing:.02em;opacity:.95;min-height:1.4em;
@@ -190,9 +190,9 @@
     <button aria-label="menu"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M4 8h16M4 16h16"/></svg></button>
   </div>
 </header>
+<canvas id="stage"></canvas>
 
 <section class="hero" id="top">
-  <canvas id="stage"></canvas>
   <p class="sleep-note" id="sleepNote">spider sleeps when mouse stops</p>
   <h1 class="wordmark">found</h1>
 
@@ -282,7 +282,6 @@
 
 <script>
 (() => {
-  const hero = document.querySelector(".hero");
   const canvas = document.getElementById("stage");
   const ctx = canvas.getContext("2d");
   const note = document.getElementById("sleepNote");
@@ -290,57 +289,34 @@
   const fine = window.matchMedia("(pointer: fine)").matches;
   if (fine && !reduced) document.body.classList.add("fly-mode");
 
-  let W = 0, H = 0, dpr = Math.min(window.devicePixelRatio || 1, 2);
+  const DPR = Math.min(window.devicePixelRatio || 1, 2);
+  let VW = 0, VH = 0;
   function resize() {
-    const r = hero.getBoundingClientRect();
-    W = r.width; H = r.height;
-    canvas.width = W * dpr; canvas.height = H * dpr;
-    canvas.style.width = W + "px"; canvas.style.height = H + "px";
-    ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
+    VW = window.innerWidth; VH = window.innerHeight;
+    canvas.width = VW * DPR; canvas.height = VH * DPR;
+    canvas.style.width = VW + "px"; canvas.style.height = VH + "px";
     collectAnchors();
   }
 
-  /* anchors: corners of the taped cards + two points on the wordmark */
+  /* ---------- anchors (document coordinates) ---------- */
   let anchors = [];
   function collectAnchors() {
-    const hr = hero.getBoundingClientRect();
     anchors = [];
-    hero.querySelectorAll("[data-anchor]").forEach((el) => {
+    document.querySelectorAll("[data-anchor], .cabinet .item").forEach((el) => {
       const r = el.getBoundingClientRect();
-      anchors.push({ x: r.right - hr.left - 6, y: r.top - hr.top + 4 });
-      anchors.push({ x: r.left - hr.left + 6, y: r.top - hr.top + 4 });
+      const x = r.left + window.scrollX, y = r.top + window.scrollY;
+      anchors.push({ x: x + 8, y: y + 6, real: true });
+      anchors.push({ x: x + r.width - 8, y: y + 6, real: true });
     });
-    const wm = hero.querySelector(".wordmark").getBoundingClientRect();
-    anchors.push({ x: wm.left - hr.left + wm.width * 0.30, y: wm.top - hr.top + wm.height * 0.30 });
-    anchors.push({ x: wm.left - hr.left + wm.width * 0.72, y: wm.top - hr.top + wm.height * 0.22 });
+    const wm = document.querySelector(".wordmark");
+    if (wm) {
+      const r = wm.getBoundingClientRect();
+      anchors.push({ x: r.left + window.scrollX + r.width * 0.32, y: r.top + window.scrollY + 10, real: true });
+      anchors.push({ x: r.left + window.scrollX + r.width * 0.74, y: r.top + window.scrollY + 6, real: true });
+    }
   }
-
-  const mouse = { x: -100, y: -100, seen: false, lastMove: 0, down: false };
-  hero.addEventListener("pointermove", (e) => {
-    const r = hero.getBoundingClientRect();
-    mouse.x = e.clientX - r.left; mouse.y = e.clientY - r.top;
-    mouse.seen = true; mouse.lastMove = performance.now();
-  });
-  hero.addEventListener("pointerleave", () => { mouse.seen = false; });
-
-  const spider = {
-    x: 0, y: 0, vx: 0, vy: 0, angle: Math.PI / 2, step: 0,
-    anchor: null, pounceUntil: 0, pounceTx: 0, pounceTy: 0, eatUntil: 0,
-  };
-  const fly = { x: -100, y: -100, caughtUntil: 0 };
-  const bursts = [];
-  let webProgress = 0;
-
-  hero.addEventListener("pointerdown", (e) => {
-    const r = hero.getBoundingClientRect();
-    spider.pounceTx = e.clientX - r.left;
-    spider.pounceTy = e.clientY - r.top;
-    spider.pounceUntil = performance.now() + 650;
-    mouse.lastMove = performance.now();
-  });
-
-  function nearestAnchor(x, y) {
-    let best = null, bd = 1e9;
+  function nearestAnchor(x, y, maxD) {
+    let best = null, bd = maxD * maxD;
     for (const a of anchors) {
       const d = (a.x - x) ** 2 + (a.y - y) ** 2;
       if (d < bd) { bd = d; best = a; }
@@ -348,25 +324,87 @@
     return best;
   }
 
-  function drawCornerWeb(cx, cy, baseAngle, progress) {
-    if (progress <= 0) return;
-    const spokes = 5, R = 118;
-    const pts = [];
-    for (let i = 0; i < spokes; i++) {
-      const a = baseAngle + (i / (spokes - 1) - 0.5) * 1.85;
-      pts.push({ x: cx + Math.cos(a) * R, y: cy + Math.sin(a) * R });
+  /* ---------- state ---------- */
+  const mouse = { x: -100, y: -100, seen: false, lastMove: 0 };
+  window.addEventListener("pointermove", (e) => {
+    mouse.x = e.clientX + window.scrollX;
+    mouse.y = e.clientY + window.scrollY;
+    mouse.seen = true; mouse.lastMove = performance.now();
+    if (spider.mode === "sleep") spider.mode = "hunt";
+  }, { passive: true });
+
+  const spider = {
+    ax: 0, ay: 0, L: 190, th: 0.2, om: 0,
+    x: 0, y: 0, angle: Math.PI, step: 0,
+    mode: "hunt", modeUntil: 0, diveTx: 0, diveTy: 0,
+    anchorRef: null, lastPin: 0, eatUntil: 0, face: 0, px: 0, py: 0,
+  };
+  const fly = { x: -100, y: -100, caughtUntil: 0 };
+  const strands = [];           // silk the spider has laid: {x1,y1,x2,y2,sag}
+  const fans = new Map();       // anchor key -> progress
+  const bursts = [];
+  const key = (a) => Math.round(a.x) + "," + Math.round(a.y);
+
+  window.addEventListener("pointerdown", (e) => {
+    spider.diveTx = e.clientX + window.scrollX;
+    spider.diveTy = e.clientY + window.scrollY;
+    spider.mode = "dive";
+    mouse.lastMove = performance.now();
+    if (spider.mode === "sleep") spider.mode = "dive";
+  });
+
+  function pinTo(a, now) {
+    if (spider.anchorRef && a !== spider.anchorRef && spider.anchorRef.real && a.real) {
+      const d = Math.hypot(a.x - spider.anchorRef.x, a.y - spider.anchorRef.y);
+      if (d > 60 && d < 900) {
+        strands.push({ x1: spider.anchorRef.x, y1: spider.anchorRef.y, x2: a.x, y2: a.y, sag: 14 + d * 0.04 });
+        if (strands.length > 46) strands.shift();
+      }
     }
-    ctx.strokeStyle = "rgba(255,255,255,0.55)";
+    if (a.real && !fans.has(key(a))) fans.set(key(a), 0.001);
+    spider.anchorRef = a;
+    spider.ax = a.x; spider.ay = a.y;
+    const dx = spider.x - a.x, dy = Math.max(24, spider.y - a.y);
+    spider.L = Math.hypot(dx, dy);
+    spider.th = Math.atan2(dx, dy);
+    spider.om = 0;
+    spider.lastPin = now;
+  }
+
+  /* ---------- drawing ---------- */
+  const speckles = [];
+  for (let i = 0; i < 26; i++) {
+    speckles.push({ x: Math.sin(i * 12.9898) * 9.5, y: 8 + ((i * 7.13) % 20), r: 0.8 + (i % 3) * 0.5 });
+  }
+
+  function drawStrand(x1, y1, x2, y2, sag, alpha) {
+    ctx.strokeStyle = `rgba(255,255,255,${alpha})`;
     ctx.lineWidth = 1;
-    for (const p of pts) {
-      ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p.x, p.y); ctx.stroke();
+    ctx.beginPath();
+    ctx.moveTo(x1, y1);
+    ctx.quadraticCurveTo((x1 + x2) / 2, (y1 + y2) / 2 + sag, x2, y2);
+    ctx.stroke();
+  }
+
+  function drawFan(a, progress) {
+    if (progress <= 0) return;
+    const cx = a.x, cy = a.y;
+    const centreA = Math.atan2(window.innerHeight * 0.4 + window.scrollY - cy, window.innerWidth / 2 - cx);
+    const R = 104;
+    const pts = [];
+    for (let i = 0; i < 5; i++) {
+      const ang = centreA + (i / 4 - 0.5) * 1.7;
+      pts.push({ x: cx + Math.cos(ang) * R, y: cy + Math.sin(ang) * R });
     }
+    ctx.strokeStyle = "rgba(255,255,255,0.5)";
+    ctx.lineWidth = 1;
+    for (const p of pts) { ctx.beginPath(); ctx.moveTo(cx, cy); ctx.lineTo(p.x, p.y); ctx.stroke(); }
     for (let ring = 1; ring <= 3; ring++) {
-      const rf = (ring / 3.4) * progress;
+      const rf = (ring / 3.3) * progress;
       ctx.beginPath();
       pts.forEach((p, i) => {
         const x = cx + (p.x - cx) * rf;
-        const y = cy + (p.y - cy) * rf + (i > 0 && i < spokes - 1 ? 5 * rf : 0);
+        const y = cy + (p.y - cy) * rf + (i > 0 && i < 4 ? 5 * rf : 0);
         i === 0 ? ctx.moveTo(x, y) : ctx.lineTo(x, y);
       });
       ctx.stroke();
@@ -374,173 +412,244 @@
   }
 
   function drawSpider(t, speed, sleeping) {
-    const { x, y, angle } = spider;
+    const { x, y } = spider;
     ctx.save();
     ctx.translate(x, y);
-    ctx.rotate(angle - Math.PI / 2);
-    ctx.scale(1.35, 1.35);
-    /* legs */
-    ctx.strokeStyle = "#2e1f12";
+    ctx.rotate(spider.face || 0);
+    ctx.scale(1.9, 1.9);
     ctx.lineCap = "round";
     for (let side = -1; side <= 1; side += 2) {
       for (let i = 0; i < 4; i++) {
         const phase = spider.step + i * 1.7 + (side > 0 ? Math.PI : 0);
-        const lift = sleeping ? 0 : Math.max(0, Math.sin(phase)) * (2 + speed * 0.05);
-        const spread = 11 + i * 6.2;
-        const fwd = -12 + i * 8;
-        const kneeX = side * (spread + 6), kneeY = fwd - 6 - lift * 0.4;
-        const hang = sleeping ? 1 : Math.max(0, 1 - (Math.abs(spider.vx) + Math.abs(spider.vy)) * 0.4);
-        const footX = side * (spread + 12) * (1 - hang * 0.22), footY = fwd + 8 - lift + hang * 11;
-        ctx.lineWidth = 3.4;
-        ctx.beginPath();
-        ctx.moveTo(side * 6, fwd * 0.45);
-        ctx.lineTo(kneeX, kneeY);
-        ctx.lineTo(footX, footY);
-        ctx.stroke();
+        const lift = sleeping ? 0 : Math.max(0, Math.sin(phase)) * (1.6 + speed * 0.22);
+        const hang = sleeping ? 1 : Math.max(0, 1 - speed * 0.35);
+        const spread = (10.5 + i * 5.6) * (1 - hang * 0.18);
+        const fwd = -11 + i * 7.4;
+        const kneeX = side * (spread + 5.5), kneeY = fwd - 5.5 - lift * 0.4;
+        const footX = side * (spread + 11) * (1 - hang * 0.15), footY = fwd + 7 - lift + hang * 10;
+        ctx.strokeStyle = "#2e1f12"; ctx.lineWidth = 3.1;
+        ctx.beginPath(); ctx.moveTo(side * 5.5, fwd * 0.45); ctx.lineTo(kneeX, kneeY); ctx.stroke();
+        ctx.strokeStyle = "#6e4c26"; ctx.lineWidth = 2.4;
+        ctx.beginPath(); ctx.moveTo(kneeX, kneeY); ctx.lineTo(footX, footY); ctx.stroke();
       }
     }
-    /* abdomen */
-    const ab = ctx.createRadialGradient(-3, 16, 3, 0, 18, 24);
-    ab.addColorStop(0, "#a97c46"); ab.addColorStop(0.6, "#7d5527"); ab.addColorStop(1, "#54371a");
+    const ab = ctx.createRadialGradient(-3, 15, 3, 0, 17, 23);
+    ab.addColorStop(0, "#b0824a"); ab.addColorStop(0.6, "#7d5527"); ab.addColorStop(1, "#4e3315");
     ctx.fillStyle = ab;
-    ctx.beginPath(); ctx.ellipse(0, 19, 13.5, 16.5, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "rgba(244,237,222,0.5)";
-    ctx.beginPath(); ctx.ellipse(0, 15, 4.6, 8.5, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.ellipse(0, 28, 3.2, 5, 0, 0, Math.PI * 2); ctx.fill();
-    /* cephalothorax */
-    const ce = ctx.createRadialGradient(-2, -4, 2, 0, -2, 13);
-    ce.addColorStop(0, "#8a6136"); ce.addColorStop(1, "#4a3016");
+    ctx.beginPath(); ctx.ellipse(0, 18, 13, 16, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.fillStyle = "rgba(30,19,8,0.35)";
+    for (const sp2 of speckles) { ctx.beginPath(); ctx.arc(sp2.x, sp2.y, sp2.r, 0, Math.PI * 2); ctx.fill(); }
+    ctx.fillStyle = "rgba(244,237,222,0.55)";
+    ctx.beginPath(); ctx.ellipse(0, 14, 4.2, 8, 0, 0, Math.PI * 2); ctx.fill();
+    const ce = ctx.createRadialGradient(-2, -4, 2, 0, -2, 12);
+    ce.addColorStop(0, "#96693a"); ce.addColorStop(1, "#453014");
     ctx.fillStyle = ce;
-    ctx.beginPath(); ctx.ellipse(0, -3, 10.5, 11.5, 0, 0, Math.PI * 2); ctx.fill();
-    /* eyes */
-    for (const [ex, ey, r] of [[-3.6, -11, 3.1], [3.6, -11, 3.1], [-7.6, -8.6, 1.7], [7.6, -8.6, 1.7]]) {
-      ctx.fillStyle = "#120b06";
+    ctx.beginPath(); ctx.ellipse(0, -3, 10, 11, 0, 0, Math.PI * 2); ctx.fill();
+    /* pedipalps */
+    ctx.strokeStyle = "#3a2812"; ctx.lineWidth = 2.6;
+    for (const s of [-1, 1]) {
+      ctx.beginPath(); ctx.moveTo(s * 3.4, -11); ctx.quadraticCurveTo(s * 6.4, -15, s * 8.6, -13.4); ctx.stroke();
+    }
+    for (const [ex, ey, r] of [[-3.4, -10.6, 3], [3.4, -10.6, 3], [-7.2, -8.2, 1.6], [7.2, -8.2, 1.6]]) {
+      ctx.fillStyle = "#0f0803";
       ctx.beginPath(); ctx.arc(ex, ey, r, 0, Math.PI * 2); ctx.fill();
-      ctx.fillStyle = "rgba(255,255,255,0.85)";
-      ctx.beginPath(); ctx.arc(ex - r * 0.3, ey - r * 0.35, r * 0.32, 0, Math.PI * 2); ctx.fill();
+      ctx.fillStyle = "rgba(255,255,255,0.9)";
+      ctx.beginPath(); ctx.arc(ex - r * 0.3, ey - r * 0.35, r * 0.34, 0, Math.PI * 2); ctx.fill();
     }
     ctx.restore();
 
     if (sleeping) {
-      ctx.fillStyle = "rgba(255,255,255,0.9)";
-      ctx.font = "700 13px Verdana";
-      const bob = Math.sin(t / 500) * 2;
-      ctx.fillText("z", x + 16, y - 18 + bob);
-      ctx.font = "700 17px Verdana";
-      ctx.fillText("z", x + 25, y - 30 + bob * 1.4);
+      ctx.fillStyle = "rgba(255,255,255,0.92)";
+      const bob = Math.sin(t / 480) * 2;
+      ctx.font = "700 14px Verdana";
+      ctx.fillText("z", x + 24, y - 26 + bob);
+      ctx.font = "700 19px Verdana";
+      ctx.fillText("z", x + 35, y - 42 + bob * 1.5);
     }
   }
 
   function drawFly(t) {
     if (performance.now() < fly.caughtUntil) return;
-    const { x, y } = fly;
     ctx.save();
-    ctx.translate(x, y);
-    ctx.scale(1.3, 1.3);
-    const flap = Math.sin(t / 24) * 0.9;
-    ctx.fillStyle = "rgba(255,255,255,0.55)";
+    ctx.translate(fly.x, fly.y);
+    ctx.scale(1.7, 1.7);
+    const flap = Math.sin(t / 22) * 0.9;
+    ctx.fillStyle = "rgba(255,255,255,0.6)";
     for (const s of [-1, 1]) {
       ctx.save();
       ctx.rotate(s * (0.7 + flap * 0.45));
       ctx.beginPath(); ctx.ellipse(s * 5.5, -3.5, 6, 2.8, 0, 0, Math.PI * 2); ctx.fill();
       ctx.restore();
     }
-    ctx.fillStyle = "#191919";
-    ctx.beginPath(); ctx.ellipse(0, 0, 4.6, 6.2, 0, 0, Math.PI * 2); ctx.fill();
-    ctx.fillStyle = "#7a1f1f";
-    ctx.beginPath(); ctx.arc(-1.8, -4.6, 1.5, 0, Math.PI * 2); ctx.fill();
-    ctx.beginPath(); ctx.arc(1.8, -4.6, 1.5, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowColor = "rgba(255,255,255,0.85)"; ctx.shadowBlur = 7;
+    ctx.fillStyle = "#161616";
+    ctx.beginPath(); ctx.ellipse(0, 0, 4.6, 6.4, 0, 0, Math.PI * 2); ctx.fill();
+    ctx.shadowBlur = 0;
+    ctx.fillStyle = "#8c2323";
+    ctx.beginPath(); ctx.arc(-1.8, -4.8, 1.6, 0, Math.PI * 2); ctx.fill();
+    ctx.beginPath(); ctx.arc(1.8, -4.8, 1.6, 0, Math.PI * 2); ctx.fill();
     ctx.restore();
   }
 
-  let running = true;
-  new IntersectionObserver((es) => { running = es[0].isIntersecting; }, { threshold: 0 }).observe(hero);
-
+  /* ---------- main loop ---------- */
   function frame(t) {
     requestAnimationFrame(frame);
-    if (!running || !W) return;
-    ctx.clearRect(0, 0, W, H);
     const now = performance.now();
+    const sy = window.scrollY;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, -sy * DPR);
+    ctx.clearRect(0, sy, VW, VH);
+
     const idle = now - mouse.lastMove > 3500;
-    const sleeping = idle && mouse.seen && now > spider.eatUntil;
+    if (idle && mouse.seen && spider.mode === "hunt") spider.mode = "sleep";
+    const sleeping = spider.mode === "sleep";
 
-    /* webs between anchors */
-    webProgress = Math.min(1, webProgress + 0.0016);
-    if (anchors.length >= 6) {
-      drawCornerWeb(anchors[0].x, anchors[0].y, 0.5, webProgress);
-      drawCornerWeb(anchors[3].x, anchors[3].y, Math.PI - 0.6, webProgress * 0.85);
-    }
-
-    /* fly follows the cursor */
+    /* fly tracks the cursor with a lively jitter */
     if (mouse.seen) {
-      fly.x += (mouse.x - fly.x) * 0.5;
-      fly.y += (mouse.y - fly.y) * 0.5;
+      fly.x += (mouse.x - fly.x) * 0.55;
+      fly.y += (mouse.y - fly.y) * 0.55;
+      fly.x += Math.sin(t / 90) * 0.7;
+      fly.y += Math.cos(t / 77) * 0.7;
     }
 
-    /* spider behaviour */
-    if (spider.x === 0) { spider.x = W * 0.5; spider.y = H * 0.42; }
-    let tx = W * 0.5, ty = H * 0.42, maxV = 2.4, accel = 0.045;
-    if (now < spider.pounceUntil) { tx = spider.pounceTx; ty = spider.pounceTy; maxV = 13; accel = 0.3; }
-    else if (mouse.seen && !sleeping) { tx = fly.x; ty = fly.y; }
-    const dx = tx - spider.x, dy = ty - spider.y;
-    const dist = Math.hypot(dx, dy) || 1;
-    spider.vx += (dx / dist) * accel * Math.min(dist, 60) * 0.06;
-    spider.vy += (dy / dist) * accel * Math.min(dist, 60) * 0.06;
-    const sp = Math.hypot(spider.vx, spider.vy);
-    if (sp > maxV) { spider.vx = spider.vx / sp * maxV; spider.vy = spider.vy / sp * maxV; }
-    if (sleeping) { spider.vx *= 0.9; spider.vy *= 0.9; }
-    spider.x += spider.vx; spider.y += spider.vy;
-    spider.step += sp * 0.55;
-    if (sp > 0.4) spider.angle = Math.atan2(spider.vy, spider.vx) + Math.PI / 2;
-
-    /* pounce catch */
-    if (now < spider.pounceUntil && dist < 26 && now > fly.caughtUntil) {
-      fly.caughtUntil = now + 800;
-      spider.eatUntil = now + 800;
-      bursts.push({ x: tx, y: ty, born: now });
+    /* init */
+    if (!spider.anchorRef) {
+      spider.x = VW * 0.5; spider.y = 216;
+      pinTo({ x: VW * 0.5, y: 6, real: false }, now);
     }
 
-    /* silk thread to nearest anchor */
-    spider.anchor = nearestAnchor(spider.x, spider.y);
-    if (spider.anchor) {
-      ctx.strokeStyle = "rgba(255,255,255,0.55)";
-      ctx.lineWidth = 1;
-      ctx.beginPath();
-      ctx.moveTo(spider.anchor.x, spider.anchor.y);
-      ctx.quadraticCurveTo((spider.anchor.x + spider.x) / 2 + 8, (spider.anchor.y + spider.y) / 2, spider.x, spider.y - 14);
-      ctx.stroke();
+    /* choose the anchor the spider wants: a real point above the fly */
+    if (spider.mode === "hunt" && mouse.seen && now - spider.lastPin > 650) {
+      const want = nearestAnchor(fly.x, fly.y - 170, 520);
+      if (want && want !== spider.anchorRef) pinTo(want, now);
+      else if (!want && spider.anchorRef && !spider.anchorRef.real) {
+        spider.ax += (fly.x - spider.ax) * 0.05;
+      }
+    }
+    if (spider.mode === "hunt" && (!spider.anchorRef || !spider.anchorRef.real) && mouse.seen) {
+      /* drift the virtual anchor toward above the fly */
+      spider.ax += (fly.x - spider.ax) * 0.03;
+      spider.ay += (Math.max(6, fly.y - 210) - spider.ay) * 0.03;
     }
 
-    /* bursts */
+    let speed = 0;
+    if (spider.mode === "dive") {
+      const dx = spider.diveTx - spider.x, dy = spider.diveTy - spider.y;
+      const d = Math.hypot(dx, dy) || 1;
+      const v = Math.min(17, 4 + d * 0.09);
+      spider.x += (dx / d) * v; spider.y += (dy / d) * v;
+      speed = v;
+      spider.step += v * 0.9;
+      if (d < 20) {
+        bursts.push({ x: spider.diveTx, y: spider.diveTy, born: now });
+        if (Math.hypot(fly.x - spider.x, fly.y - spider.y) < 46) {
+          fly.caughtUntil = now + 850; spider.eatUntil = now + 850;
+        }
+        spider.mode = "climb"; spider.modeUntil = now + 750;
+        const a = nearestAnchor(spider.x, spider.y - 40, 700) || { x: spider.x, y: Math.max(6, spider.y - 240), real: false };
+        pinTo(a, now);
+      }
+    } else if (spider.mode === "climb") {
+      spider.L = Math.max(64, spider.L - 3.4);
+      spider.om *= 0.94;
+      spider.th += spider.om;
+      spider.x = spider.ax + Math.sin(spider.th) * spider.L;
+      spider.y = spider.ay + Math.cos(spider.th) * spider.L;
+      speed = 2;
+      if (now > spider.modeUntil) spider.mode = sleeping ? "sleep" : "hunt";
+    } else {
+      /* pendulum hunt / sleep */
+      const g = sleeping ? 0.0016 : 0.0021;
+      let drive = 0;
+      if (!sleeping && mouse.seen) drive = (fly.x - spider.x) * 0.000045;
+      spider.om += (-(g / Math.max(0.55, spider.L / 190)) * Math.sin(spider.th) + drive) * 16;
+      spider.om *= sleeping ? 0.96 : 0.992;
+      spider.th += spider.om;
+      let targetL = 190;
+      if (!sleeping && mouse.seen) {
+        const dAnchorFly = Math.hypot(fly.x - spider.ax, fly.y - spider.ay);
+        targetL = Math.min(430, Math.max(70, dAnchorFly * 0.94));
+      }
+      if (sleeping) targetL = 165;
+      spider.L += (targetL - spider.L) * (sleeping ? 0.02 : 0.035);
+      spider.x = spider.ax + Math.sin(spider.th) * spider.L;
+      spider.y = spider.ay + Math.cos(spider.th) * spider.L;
+      speed = Math.abs(spider.om) * spider.L * 0.06;
+      spider.step += speed * 1.4;
+      /* catch the fly */
+      if (!sleeping && mouse.seen && now > spider.eatUntil &&
+          Math.hypot(fly.x - spider.x, fly.y - spider.y) < 36) {
+        fly.caughtUntil = now + 850;
+        spider.eatUntil = now + 850;
+        bursts.push({ x: fly.x, y: fly.y, born: now });
+        spider.mode = "climb"; spider.modeUntil = now + 650;
+      }
+    }
+
+    /* facing: head toward the thread when hanging, toward motion when moving */
+    {
+      const vx = spider.x - (spider.px || spider.x), vy = spider.y - (spider.py || spider.y);
+      spider.px = spider.x; spider.py = spider.y;
+      let fx = spider.ax - spider.x, fy = spider.ay - spider.y;
+      const vm = Math.hypot(vx, vy);
+      if (spider.mode === "dive") { fx = vx; fy = vy; }
+      else if (vm > 1.6) { fx = fx * 0.55 + vx * 0.45 * 8; fy = fy * 0.55 + vy * 0.45 * 8; }
+      const fl = Math.hypot(fx, fy) || 1;
+      const desired = Math.atan2(fx / fl, -fy / fl);
+      let diff = desired - spider.face;
+      while (diff > Math.PI) diff -= Math.PI * 2;
+      while (diff < -Math.PI) diff += Math.PI * 2;
+      spider.face += diff * 0.16;
+    }
+
+    /* ----- draw world ----- */
+    for (const st of strands) drawStrand(st.x1, st.y1, st.x2, st.y2, st.sag, 0.42);
+    for (const [k, p] of fans) {
+      const a = anchors.find((an) => key(an) === k);
+      if (a) { drawFan(a, p); if (p < 1) fans.set(k, Math.min(1, p + 0.012)); }
+    }
+    /* the spider's own thread */
+    ctx.strokeStyle = "rgba(255,255,255,0.65)";
+    ctx.lineWidth = 1.1;
+    ctx.beginPath();
+    ctx.moveTo(spider.ax, spider.ay);
+    ctx.lineTo(spider.x, spider.y - 16);
+    ctx.stroke();
+
     for (let i = bursts.length - 1; i >= 0; i--) {
       const b = bursts[i];
       const age = (now - b.born) / 700;
       if (age > 1) { bursts.splice(i, 1); continue; }
-      ctx.strokeStyle = `rgba(255,255,255,${0.75 * (1 - age)})`;
-      ctx.lineWidth = 1.2;
-      for (let k = 0; k < 8; k++) {
-        const a = (k / 8) * Math.PI * 2 + 0.4;
+      ctx.strokeStyle = `rgba(255,255,255,${0.8 * (1 - age)})`;
+      ctx.lineWidth = 1.3;
+      for (let k2 = 0; k2 < 8; k2++) {
+        const a2 = (k2 / 8) * Math.PI * 2 + 0.4;
         ctx.beginPath();
         ctx.moveTo(b.x, b.y);
-        ctx.lineTo(b.x + Math.cos(a) * 46 * age, b.y + Math.sin(a) * 46 * age);
+        ctx.lineTo(b.x + Math.cos(a2) * 52 * age, b.y + Math.sin(a2) * 52 * age);
         ctx.stroke();
       }
     }
 
-    note.textContent = sleeping
-      ? "the spider is asleep — move to wake it"
-      : "spider sleeps when mouse stops";
+    drawSpider(t, speed, sleeping);
+    if (fine && mouse.seen) drawFly(t);
 
-    drawSpider(t, sp, sleeping);
-    if (fine) drawFly(t);
+    if (note) {
+      note.textContent = sleeping
+        ? "the spider is asleep — move to wake it"
+        : "spider sleeps when mouse stops";
+    }
   }
 
   resize();
   window.addEventListener("resize", resize);
-  window.addEventListener("load", () => setTimeout(resize, 60));
+  window.addEventListener("load", () => setTimeout(resize, 80));
   if (reduced) {
-    spider.x = window.innerWidth * 0.5; spider.y = 300;
-    ctx.clearRect(0, 0, W, H);
+    spider.x = VW * 0.5; spider.y = 330;
+    const a = nearestAnchor(spider.x, 60, 600) || { x: VW * 0.5, y: 8, real: false };
+    spider.ax = a.x; spider.ay = a.y; spider.anchorRef = a;
+    ctx.setTransform(DPR, 0, 0, DPR, 0, 0);
+    ctx.strokeStyle = "rgba(255,255,255,0.65)";
+    ctx.beginPath(); ctx.moveTo(spider.ax, spider.ay); ctx.lineTo(spider.x, spider.y - 16); ctx.stroke();
     drawSpider(0, 0, false);
   } else {
     requestAnimationFrame(frame);
@@ -551,39 +660,26 @@
   const btn = document.getElementById("radioPlay");
   const icoPlay = document.getElementById("icoPlay");
   const icoPause = document.getElementById("icoPause");
-  let actx = null, nodes = null, playing = false;
+  let actx = null, master = null, playing = false;
   function startAudio() {
     actx = new (window.AudioContext || window.webkitAudioContext)();
-    const master = actx.createGain(); master.gain.value = 0.0;
-    master.connect(actx.destination);
+    master = actx.createGain(); master.gain.value = 0;
     const filter = actx.createBiquadFilter(); filter.type = "lowpass"; filter.frequency.value = 720;
-    filter.connect(master);
-    const freqs = [220, 261.63, 329.63, 440];
-    const oscs = freqs.map((f, i) => {
+    master.connect(actx.destination); filter.connect(master);
+    [220, 261.63, 329.63, 440].forEach((f, i) => {
       const o = actx.createOscillator();
       o.type = i % 2 ? "sine" : "triangle";
       o.frequency.value = f; o.detune.value = (i - 1.5) * 4;
       const g = actx.createGain(); g.gain.value = 0.05;
       o.connect(g); g.connect(filter); o.start();
-      return o;
     });
-    const lfo = actx.createOscillator(); lfo.frequency.value = 0.09;
-    const lfoG = actx.createGain(); lfoG.gain.value = 0.028;
-    lfo.connect(lfoG); freqs.forEach(() => {}); lfo.start();
-    oscs.forEach((o) => { const g = o.__g; });
-    master.gain.linearRampToValueAtTime(0.5, actx.currentTime + 1.2);
-    nodes = { master, oscs };
   }
-  btn.addEventListener("click", () => {
-    if (!playing) {
-      if (!actx) startAudio();
-      actx.resume();
-      nodes.master.gain.linearRampToValueAtTime(0.5, actx.currentTime + 0.6);
-      playing = true;
-    } else {
-      nodes.master.gain.linearRampToValueAtTime(0.0, actx.currentTime + 0.4);
-      playing = false;
-    }
+  if (btn) btn.addEventListener("click", () => {
+    if (!actx) startAudio();
+    actx.resume();
+    playing = !playing;
+    master.gain.cancelScheduledValues(actx.currentTime);
+    master.gain.linearRampToValueAtTime(playing ? 0.5 : 0.0, actx.currentTime + (playing ? 0.8 : 0.35));
     radio.classList.toggle("playing", playing);
     icoPlay.style.display = playing ? "none" : "";
     icoPause.style.display = playing ? "" : "none";
